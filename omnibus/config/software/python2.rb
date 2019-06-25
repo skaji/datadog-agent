@@ -25,6 +25,7 @@ if ohai["platform"] != "windows"
   dependency "openssl"
   dependency "bzip2"
   dependency "libsqlite3"
+  dependency "libyaml"
 
   source :url => "http://python.org/ftp/python/#{version}/Python-#{version}.tgz",
          :sha256 => "01da813a3600876f03f46db11cc5c408175e99f03af2ba942ef324389a83bad5"
@@ -71,6 +72,7 @@ if ohai["platform"] != "windows"
 else
   default_version "2.7.16"
 
+  dependency "libyaml-windows"
   dependency "vc_redist"
   source :url => "https://s3.amazonaws.com/dd-agent-omnibus/python-windows-#{version}-amd64.zip",
          :sha256 => "6b9fdc51dde1ba6ae4cb698451900e1f8f1900ff1d56d9166dbeab06b10a4dce",

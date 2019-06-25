@@ -10,6 +10,7 @@ if ohai["platform"] != "windows"
   dependency "bzip2"
   dependency "libsqlite3"
   dependency "liblzma"
+  dependency "libyaml"
 
   version "3.6.7" do
     source :sha256 => "b7c36f7ed8f7143b2c46153b7332db2227669f583ea0cce753facf549d1a4239"
@@ -66,6 +67,7 @@ if ohai["platform"] != "windows"
 else
   default_version "3.7.1"
 
+  dependency "libyaml-windows"
   source :url => "https://s3.amazonaws.com/dd-agent-omnibus/python-windows-#{version}-amd64.zip",
          :sha256 => "c9da8a6890ce7df603724abebcd893c63616f499b9a619bb39399a09f382269a"
 
