@@ -114,9 +114,60 @@ func TestSQLUTF8(t *testing.T) {
 			"SELECT Cli_Establiments.CODCLI, Cli_Establiments.Id_ESTAB_CLI, Cli_Establiments.CODIGO_CENTRO_AXAPTA, Cli_Establiments.NOMESTAB, Cli_Establiments.ADRECA, Cli_Establiments.CodPostal, Cli_Establiments.Poblacio, Cli_Establiments.Provincia, Cli_Establiments.TEL, Cli_Establiments.EMAIL, Cli_Establiments.PERS_CONTACTE, Cli_Establiments.PERS_CONTACTE_CARREC, Cli_Establiments.NumTreb, Cli_Establiments.Localitzacio, Tipus_Activitat.CNAE, Tipus_Activitat.Nom_ES, ACTIVO FROM Cli_Establiments LEFT OUTER JOIN Tipus_Activitat ON Cli_Establiments.Id_ACTIVITAT = Tipus_Activitat.IdActivitat Where CODCLI = ? AND CENTRE_CORRECTE = ? AND ACTIVO = ? ORDER BY Cli_Establiments.CODIGO_CENTRO_AXAPTA",
 		},
 	} {
-		out, err := obfuscateSQLString(tt.in)
+		out, _, err := obfuscateSQLString(tt.in)
 		assert.NoError(err)
 		assert.Equal(tt.out, out)
+	}
+}
+
+func TestSQLTableFinder(t *testing.T) {
+	for _, tt := range []struct {
+		query  string
+		tables []string
+	}{
+		{
+			"select * from users where id = 42",
+			[]string{"users"},
+		},
+		{
+			"SELECT host, status FROM ec2_status WHERE org_id = 42",
+			[]string{"ec2_status"},
+		},
+		{
+			"-- get user \n--\n select * \n   from users \n    where\n       id = 214325346",
+			[]string{"users"},
+		},
+		{
+			"SELECT articles.* FROM articles WHERE articles.id = 1 LIMIT 1, 20",
+			[]string{"articles"},
+		},
+		{
+			"UPDATE user_dash_pref SET json_prefs = %(json_prefs)s, modified = '2015-08-27 22:10:32.492912' WHERE user_id = %(user_id)s AND url = %(url)s",
+			[]string{"user_dash_pref"},
+		},
+		{
+			"SELECT DISTINCT host.id AS host_id FROM host JOIN host_alias ON host_alias.host_id = host.id WHERE host.org_id = %(org_id_1)s AND host.name NOT IN (%(name_1)s) AND host.name IN (%(name_2)s, %(name_3)s, %(name_4)s, %(name_5)s)",
+			[]string{"host", "host_alias"},
+		},
+		{
+			`update Orders set created = "2019-05-24 00:26:17", gross = 30.28, payment_type = "eventbrite", mg_fee = "3.28", fee_collected = "3.28", event = 59366262, status = "10", survey_type = 'direct', tx_time_limit = 480, invite = "", ip_address = "69.215.148.82", currency = 'USD', gross_USD = "30.28", tax_USD = 0.00, journal_activity_id = 4044659812798558774, eb_tax = 0.00, eb_tax_USD = 0.00, cart_uuid = "160b450e7df511e9810e0a0c06de92f8", changed = '2019-05-24 00:26:17' where id = ?`,
+			[]string{"Orders"},
+		},
+		{
+			"SELECT * FROM clients WHERE (clients.first_name = 'Andy') LIMIT 1 BEGIN INSERT INTO owners (created_at, first_name, locked, orders_count, updated_at) VALUES ('2011-08-30 05:22:57', 'Andy', 1, NULL, '2011-08-30 05:22:57') COMMIT",
+			[]string{"clients", "owners"},
+		},
+		{
+			"DELETE FROM table WHERE table.a=1",
+			[]string{"table"},
+		},
+	} {
+		t.Run("", func(t *testing.T) {
+			assert := assert.New(t)
+			_, names, err := obfuscateSQLString(tt.query)
+			assert.NoError(err)
+			assert.ElementsMatch(tt.tables, names)
+		})
 	}
 }
 
@@ -453,7 +504,7 @@ LIMIT 1000`,
 
 	// The consumer is the same between executions
 	for _, tc := range testCases {
-		output, err := obfuscateSQLString(tc.query)
+		output, _, err := obfuscateSQLString(tc.query)
 		assert.Nil(err)
 		assert.Equal(tc.expected, output)
 	}
@@ -466,7 +517,7 @@ func TestConsumerError(t *testing.T) {
 	// what to do with malformed SQL
 	input := "SELECT * FROM users WHERE users.id = '1 AND users.name = 'dog'"
 
-	output, err := obfuscateSQLString(input)
+	output, _, err := obfuscateSQLString(input)
 	assert.NotNil(err)
 	assert.Equal("", output)
 }
@@ -474,55 +525,55 @@ func TestConsumerError(t *testing.T) {
 func TestSQLErrors(t *testing.T) {
 	assert := assert.New(t)
 
-	_, err := obfuscateSQLString("")
+	_, _, err := obfuscateSQLString("")
 	assert.Error(err)
 	assert.Equal("result is empty", err.Error())
 
-	_, err = obfuscateSQLString("SELECT a FROM b WHERE a.x !* 2")
+	_, _, err = obfuscateSQLString("SELECT a FROM b WHERE a.x !* 2")
 	assert.Error(err)
 	assert.Equal(`at position 27: expected "=" after "!", got "*" (42)`, err.Error())
 
-	_, err = obfuscateSQLString("SELECT 🥒")
+	_, _, err = obfuscateSQLString("SELECT 🥒")
 	assert.Error(err)
 	assert.Equal(`at position 11: unexpected byte 129362`, err.Error())
 
-	_, err = obfuscateSQLString("SELECT name, `1a` FROM profile")
+	_, _, err = obfuscateSQLString("SELECT name, `1a` FROM profile")
 	assert.Error(err)
 	assert.Equal(`at position 14: unexpected character "1" (49) in literal identifier`, err.Error())
 
-	_, err = obfuscateSQLString("SELECT name, `age}` FROM profile")
+	_, _, err = obfuscateSQLString("SELECT name, `age}` FROM profile")
 	assert.Error(err)
 	assert.Equal(`at position 17: literal identifiers must end in "`+"`"+`", got "}" (125)`, err.Error())
 
-	_, err = obfuscateSQLString("SELECT %(asd)| FROM profile")
+	_, _, err = obfuscateSQLString("SELECT %(asd)| FROM profile")
 	assert.Error(err)
 	assert.Equal(`at position 13: invalid character after variable identifier: "|" (124)`, err.Error())
 
-	_, err = obfuscateSQLString("USING $A FROM users")
+	_, _, err = obfuscateSQLString("USING $A FROM users")
 	assert.Error(err)
 	assert.Equal(`at position 7: prepared statements must start with digits, got "A" (65)`, err.Error())
 
-	_, err = obfuscateSQLString("USING $09 SELECT")
+	_, _, err = obfuscateSQLString("USING $09 SELECT")
 	assert.Error(err)
 	assert.Equal(`at position 9: invalid number`, err.Error())
 
-	_, err = obfuscateSQLString("INSERT VALUES (1, 2) INTO {ABC")
+	_, _, err = obfuscateSQLString("INSERT VALUES (1, 2) INTO {ABC")
 	assert.Error(err)
 	assert.Equal(`at position 30: unexpected EOF in escape sequence`, err.Error())
 
-	_, err = obfuscateSQLString("SELECT one, :2two FROM profile")
+	_, _, err = obfuscateSQLString("SELECT one, :2two FROM profile")
 	assert.Error(err)
 	assert.Equal(`at position 13: bind variables should start with letters, got "2" (50)`, err.Error())
 
-	_, err = obfuscateSQLString("SELECT age FROM profile WHERE name='John \\")
+	_, _, err = obfuscateSQLString("SELECT age FROM profile WHERE name='John \\")
 	assert.Error(err)
 	assert.Equal(`at position 42: unexpected EOF after escape character in string`, err.Error())
 
-	_, err = obfuscateSQLString("SELECT age FROM profile WHERE name='John")
+	_, _, err = obfuscateSQLString("SELECT age FROM profile WHERE name='John")
 	assert.Error(err)
 	assert.Equal(`at position 41: unexpected EOF in string`, err.Error())
 
-	_, err = obfuscateSQLString("/* abcd")
+	_, _, err = obfuscateSQLString("/* abcd")
 	assert.Error(err)
 	assert.Equal(`at position 7: unexpected EOF in comment`, err.Error())
 }
@@ -541,7 +592,7 @@ func BenchmarkTokenizer(b *testing.B) {
 			b.ResetTimer()
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				_, _ = obfuscateSQLString(bm.query)
+				obfuscateSQLString(bm.query)
 			}
 		})
 	}

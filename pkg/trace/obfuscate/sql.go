@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/DataDog/datadog-agent/pkg/trace/config"
 	"github.com/DataDog/datadog-agent/pkg/trace/metrics"
 	"github.com/DataDog/datadog-agent/pkg/trace/pb"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
@@ -21,17 +23,24 @@ const sqlQueryTag = "sql.query"
 // the Filter() function used to filter or replace given tokens.
 // A filter can be stateful and keep an internal state to apply the filter later;
 // this can be useful to prevent backtracking in some cases.
+
+// tokenFilter implementations are meant to process each token in a query one by one and
+// potentially return transformed tokens.
 type tokenFilter interface {
+	// Filter takes the current token kind, the last token kind and the token itself,
+	// returning the new token kind and the value that should be stored in the final query,
+	// along with an error.
 	Filter(token, lastToken TokenKind, buffer []byte) (TokenKind, []byte, error)
+
+	// Reset resets the filter.
 	Reset()
 }
 
-// discardFilter implements the tokenFilter interface so that the given
-// token is discarded or accepted.
+// discardFilter is a token filter which discards certain elements from a query, such as
+// comments and AS aliases by returning a nil buffer.
 type discardFilter struct{}
 
-// Filter the given token so that a `nil` slice is returned if the token
-// is in the token filtered list.
+// Filter the given token so that a `nil` slice is returned if the token is in the token filtered list.
 func (f *discardFilter) Filter(token, lastToken TokenKind, buffer []byte) (TokenKind, []byte, error) {
 	// filters based on previous token
 	switch lastToken {
@@ -68,11 +77,11 @@ func (f *discardFilter) Filter(token, lastToken TokenKind, buffer []byte) (Token
 	}
 }
 
-// Reset in a discardFilter is a noop action
+// Reset implements tokenFilter.
 func (f *discardFilter) Reset() {}
 
-// replaceFilter implements the tokenFilter interface so that the given
-// token is replaced with '?' or left unchanged.
+// replaceFilter is a token filter which obfuscates strings and numbers in queries by replacing them
+// with the "?" character.
 type replaceFilter struct{}
 
 // Filter the given token so that it will be replaced if in the token replacement list
@@ -95,11 +104,11 @@ func (f *replaceFilter) Filter(token, lastToken TokenKind, buffer []byte) (token
 	}
 }
 
-// Reset in a replaceFilter is a noop action
+// Reset implements tokenFilter.
 func (f *replaceFilter) Reset() {}
 
-// groupingFilter implements the tokenFilter interface so that when
-// a common pattern is identified, it's discarded to prevent duplicates
+// groupingFilter is a token filter which groups together items replaced by the replaceFilter. It is meant
+// to run immediately after it.
 type groupingFilter struct {
 	groupFilter int
 	groupMulti  int
@@ -141,22 +150,64 @@ func (f *groupingFilter) Filter(token, lastToken TokenKind, buffer []byte) (toke
 	return token, buffer, nil
 }
 
-// Reset in a groupingFilter restores variables used to count
-// escaped token that should be filtered
+// Reset resets the groupingFilter so that it may be used again.
 func (f *groupingFilter) Reset() {
 	f.groupFilter = 0
 	f.groupMulti = 0
 }
 
-// Process the given SQL or No-SQL string so that the resulting one is properly altered. This
-// function is generic and the behavior changes according to chosen tokenFilter implementations.
-// The process calls all filters inside the []tokenFilter.
-func obfuscateSQLString(in string) (string, error) {
+// tableFinderFilter is a filter which attempts to identify the table name as it goes through each
+// token in a query.
+type tableFinderFilter struct {
+	// names keeps track of unique table names encountered by the filter, as the map keys.
+	names map[string]struct{}
+}
+
+func newTableFinder() *tableFinderFilter { return &tableFinderFilter{names: make(map[string]struct{})} }
+
+// Filter implements tokenFilter.
+func (f *tableFinderFilter) Filter(token, lastToken TokenKind, buffer []byte) (TokenKind, []byte, error) {
+	switch lastToken {
+	case From, Update, Into, Join:
+		// SELECT ... FROM [tableName]
+		// DELETE FROM [tableName]
+		// UPDATE [tableName]
+		// INSERT INTO [tableName]
+		// ... JOIN [tableName]
+		f.names[string(buffer)] = struct{}{}
+	}
+	return token, buffer, nil
+}
+
+// Names returns all the table names found by the filter.
+func (f *tableFinderFilter) Names() []string {
+	var names []string
+	for name := range f.names {
+		names = append(names, name)
+	}
+	return names
+}
+
+// Reset implements tokenFilter.
+func (f *tableFinderFilter) Reset() {
+	for k := range f.names {
+		delete(f.names, k)
+	}
+}
+
+// obfuscateSQLString attempts to obfuscate the given SQL string, returning the final value, the table
+// names found in the query and any error.
+func obfuscateSQLString(in string) (sql string, tableNames []string, err error) {
 	tokenizer := NewSQLTokenizer(in)
-	filters := []tokenFilter{&discardFilter{}, &replaceFilter{}, &groupingFilter{}}
+	tableFinder := newTableFinder()
+	filters := []tokenFilter{
+		&discardFilter{},
+		&replaceFilter{},
+		&groupingFilter{},
+		tableFinder,
+	}
 	var (
 		out       bytes.Buffer
-		err       error
 		lastToken TokenKind
 	)
 	// call Scan() function until tokens are available or if a LEX_ERROR is raised. After
@@ -165,11 +216,11 @@ func obfuscateSQLString(in string) (string, error) {
 	token, buff := tokenizer.Scan()
 	for ; token != EOFChar; token, buff = tokenizer.Scan() {
 		if token == LexError {
-			return "", tokenizer.Err()
+			return "", nil, tokenizer.Err()
 		}
 		for _, f := range filters {
 			if token, buff, err = f.Filter(token, lastToken, buff); err != nil {
-				return "", err
+				return "", nil, err
 			}
 		}
 		if buff != nil {
@@ -178,6 +229,8 @@ func obfuscateSQLString(in string) (string, error) {
 				case ',':
 				case '=':
 					if lastToken == ':' {
+						// do not add a space before an equals if a colon was
+						// present before it.
 						break
 					}
 					fallthrough
@@ -190,12 +243,11 @@ func obfuscateSQLString(in string) (string, error) {
 		lastToken = token
 	}
 	if out.Len() == 0 {
-		return "", errors.New("result is empty")
+		return "", nil, errors.New("result is empty")
 	}
-	return out.String(), nil
+	return out.String(), tableFinder.Names(), nil
 }
 
-// QuantizeSQL generates resource and sql.query meta for SQL spans
 func (o *Obfuscator) obfuscateSQL(span *pb.Span) {
 	tags := []string{"type:sql"}
 	defer func() {
@@ -205,7 +257,7 @@ func (o *Obfuscator) obfuscateSQL(span *pb.Span) {
 		tags = append(tags, "outcome:empty-resource")
 		return
 	}
-	result, err := obfuscateSQLString(span.Resource)
+	result, tableNames, err := obfuscateSQLString(span.Resource)
 	if err != nil {
 		// we have an error, discard the SQL to avoid polluting user resources.
 		log.Debugf("Error parsing SQL query: %v. Resource: %q", err, span.Resource)
@@ -223,6 +275,16 @@ func (o *Obfuscator) obfuscateSQL(span *pb.Span) {
 	tags = append(tags, "outcome:success")
 	span.Resource = result
 
+	if config.HasFeature("table_names") && len(tableNames) > 0 {
+		if span.Meta == nil {
+			span.Meta = make(map[string]string)
+		}
+		// only add the first for now, until we support list tags
+		span.Meta["sql.table"] = tableNames[0]
+		if len(tableNames) > 1 {
+			span.Meta["sql.tables"] = strings.Join(tableNames, ",")
+		}
+	}
 	if span.Meta != nil && span.Meta[sqlQueryTag] != "" {
 		// "sql.query" tag already set by user, do not change it.
 		return
