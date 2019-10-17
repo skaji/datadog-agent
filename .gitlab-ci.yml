@@ -166,12 +166,13 @@ before_script:
     - docker run --rm -m 4096M -v "$(Get-Location):c:\mnt" -e IS_AWS_CONTAINER=true -e SIGN_WINDOWS=true 486234852809.dkr.ecr.us-east-1.amazonaws.com/ci/datadog-agent-builders/windows_${ARCH}:$Env:DATADOG_AGENT_WINBUILDIMAGES \unittests.bat
 
 # TODO: disabled until slowness issues are solved
-# run_tests_windows-x64:
-#   # temporarily allow failure for tests
-#   extends: .run_tests_windows_base
-#   allow_failure: true
-#   variables:
-#     ARCH: "x64"
+run_tests_windows-x64:
+  # temporarily allow failure for tests
+  extends: .run_tests_windows_base
+  allow_failure: true
+  variables:
+    ARCH: "x64"
+    DATADOG_AGENT_WINBUILDIMAGES: v1801773-6ae2efd
 
 # run_tests_windows-x86:
 #   # temporarily allow failure for tests
@@ -646,6 +647,7 @@ agent_suse-x64-a7:
   # timeout: 2h 00m
   script:
     - mkdir .omnibus\pkg
+    - echo "Using docker image tag $Env:DATADOG_AGENT_WINBUILDIMAGES"
     - docker run --rm -m 4096M -v "$(Get-Location):c:\mnt" -e WINDOWS_BUILDER=true -e PYTHON_RUNTIMES=${PYTHON_RUNTIMES} -e IS_AWS_CONTAINER=true -e SIGN_WINDOWS=true 486234852809.dkr.ecr.us-east-1.amazonaws.com/ci/datadog-agent-builders/windows_${ARCH}:$Env:DATADOG_AGENT_WINBUILDIMAGES \build-agent6.bat --release-version %RELEASE_VERSION%
     - copy build-out\*.msi .omnibus\pkg
   artifacts:
@@ -658,6 +660,7 @@ dockerbuild_windows_msi_x64-a7:
   variables:
     ARCH: "x64"
     PYTHON_RUNTIMES: '3'
+    DATADOG_AGENT_WINBUILDIMAGES: v1801773-6ae2efd
   before_script:
     - set RELEASE_VERSION %RELEASE_VERSION_7%
   <<: *skip_when_unwanted_on_7
@@ -676,6 +679,7 @@ dockerbuild_windows_msi_x64-a6:
   variables:
     ARCH: "x64"
     PYTHON_RUNTIMES: '2,3'
+    DATADOG_AGENT_WINBUILDIMAGES: v1801773-6ae2efd
   before_script:
     - set RELEASE_VERSION %RELEASE_VERSION_6%
   <<: *skip_when_unwanted_on_6
