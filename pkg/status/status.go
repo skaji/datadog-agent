@@ -318,6 +318,36 @@ func expvarStats(stats map[string]interface{}) (map[string]interface{}, error) {
 		stats["ntpOffset"], err = strconv.ParseFloat(expvar.Get("ntpOffset").String(), 64)
 	}
 
+	a := expvar.Get("inventories")
+	log.Errorf("inventoriesStatsJSON: %v", a)
+	inventoriesStatsJSON := []byte(expvar.Get("inventories").String())
+	log.Errorf("inventoriesStatsJSON: %v", string(inventoriesStatsJSON))
+	inventoriesStats := make(map[string]interface{})
+	json.Unmarshal(inventoriesStatsJSON, &inventoriesStats)
+
+	if data, ok := inventoriesStats["check_metadata"]; ok {
+		checkMetadata := map[string]map[string]string{}
+		for _, instances := range data.(map[string]interface{}) {
+			for _, instance := range instances.([]interface{}) {
+				metadata := map[string]string{}
+				checkHash := ""
+				for k, v := range instance.(map[string]interface{}) {
+					if vStr, ok := v.(string); ok {
+						if k == "config.hash" {
+							checkHash = vStr
+						} else if k != "config.provider" && k != "last_updated" {
+							metadata[k] = vStr
+						}
+					}
+				}
+				if checkHash != "" && len(metadata) != 0 {
+					checkMetadata[checkHash] = metadata
+				}
+			}
+		}
+		stats["inventories"] = checkMetadata
+	}
+
 	return stats, err
 }
 
